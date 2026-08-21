@@ -1,0 +1,14 @@
+streamlit
+pandas
+numpy
+matplotlib
+seaborn
+mplsoccer
+arabic-reshaper
+python-bidi
+Pillow
+scipy
+streamlit-authenticator
+scikit-learn
+highlight-text
+extra-streamlit-components
