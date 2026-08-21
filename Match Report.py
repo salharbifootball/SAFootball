@@ -988,6 +988,262 @@ def draw_field_tilt_both_teams(
     })
     return fig, stats
 
+
+# ============================================================
+# تحليل الضغط + PPDA + الاسترجاع العالي (لكلا الفريقين)
+# ============================================================
+def draw_pressing_map_both_teams(
+    df_match, hteamName, ateamName,
+    hcol="#1565C0", acol="#C62828",
+    bg_color="#ffffff", line_color="#aaaaaa"
+):
+    """
+    يرسم خريطتين متقابلتين (مضيف/ضيف) لكثافة الضغط الدفاعي، مع:
+    - تلوين أثلاث الملعب (دفاعي/أوسط/هجومي)
+    - منطقة حساب PPDA ومؤشره لكل فريق
+    - رموز التدخلات/الاعتراضات/الاسترجاعات/المواجهات/حجب التمريرات
+    - قوس الاسترجاع العالي قرب مرمى الخصم
+    """
+    from matplotlib.patches import Rectangle, Arc
+
+    def ar(t):
+        return str(t)
+
+    defensive_third_color = "#e74c3c"
+    middle_third_color = "#f1c40f"
+    attacking_third_color = "#16a085"
+    third_alpha = 0.085
+    high_recovery_color = "#FFD700"
+
+    data = df_match.copy()
+    for col in ["x", "y", "endX", "endY"]:
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce")
+
+    data["event_clean"] = data["type"].astype(str).str.strip().str.lower()
+
+    TACKLE_EVENTS = ["tackle"]
+    INTERCEPTION_EVENTS = ["interception"]
+    RECOVERY_EVENTS = ["ballrecovery", "ball recovery"]
+    CHALLENGE_EVENTS = ["challenge"]
+    BLOCK_EVENTS = ["blockedpass", "blocked pass"]
+    FOUL_EVENTS = ["foul"]
+
+    def is_event(series, event_list):
+        return series.isin(event_list)
+
+    def calculate_ppda(team_name, opponent_name):
+        # معادلة PPDA بنسبة 40% / 60% من طول الملعب (x > 42 لإجراءات الفريق الدفاعية،
+        # x < 63 لتمريرات الخصم - بدون فلتر Successful) - نفس المعادلة المستخدمة في
+        # لوحة "إحصائيات المباراة" (plotting_match_stats) لضمان تطابق الرقمين.
+        team = data[data["teamName"] == team_name].copy()
+        opponent = data[data["teamName"] == opponent_name].copy()
+
+        opponent_passes = opponent[
+            (opponent["type"] == "Pass")
+            & (opponent["x"] < 63)
+        ].copy()
+
+        defensive_mask = (
+            is_event(team["event_clean"], TACKLE_EVENTS)
+            | is_event(team["event_clean"], INTERCEPTION_EVENTS)
+            | is_event(team["event_clean"], CHALLENGE_EVENTS)
+            | is_event(team["event_clean"], BLOCK_EVENTS)
+            | is_event(team["event_clean"], FOUL_EVENTS)
+        )
+        defensive_actions = team[defensive_mask & (team["x"] > 42)].copy()
+
+        passes_allowed = len(opponent_passes)
+        defensive_count = len(defensive_actions)
+        ppda = round(passes_allowed / defensive_count, 2) if defensive_count > 0 else np.nan
+        return {"ppda": ppda, "passes_allowed": passes_allowed, "defensive_actions": defensive_count}
+
+    def get_defensive_actions(team_name):
+        team = data[data["teamName"] == team_name].copy()
+        return {
+            "tackles": team[is_event(team["event_clean"], TACKLE_EVENTS)].copy(),
+            "interceptions": team[is_event(team["event_clean"], INTERCEPTION_EVENTS)].copy(),
+            "recoveries": team[is_event(team["event_clean"], RECOVERY_EVENTS)].copy(),
+            "challenges": team[is_event(team["event_clean"], CHALLENGE_EVENTS)].copy(),
+            "blocks": team[is_event(team["event_clean"], BLOCK_EVENTS)].copy(),
+        }
+
+    def get_high_recoveries(team_name):
+        team = data[data["teamName"] == team_name].copy()
+        mask = (
+            is_event(team["event_clean"], RECOVERY_EVENTS)
+            | is_event(team["event_clean"], INTERCEPTION_EVENTS)
+        )
+        # مقياس الملعب المستخدم في الرسم هو uefa (105×68) لمطابقة باقي التطبيق
+        high = team[mask & (team["x"] >= 70)].copy()
+        high = high.dropna(subset=["x", "y"]).copy()
+        if high.empty:
+            return high
+        high["distance"] = np.sqrt((high["x"] - 105) ** 2 + (high["y"] - 34) ** 2)
+        return high[high["distance"] <= 41.1].copy()
+
+    def calculate_thirds(actions):
+        actions = actions.dropna(subset=["x", "y"]).copy()
+        total = len(actions)
+        if total == 0:
+            return {"def_count": 0, "mid_count": 0, "att_count": 0,
+                    "def_pct": 0, "mid_pct": 0, "att_pct": 0}
+        defensive = actions[actions["x"] < 35]
+        middle = actions[(actions["x"] >= 35) & (actions["x"] < 70)]
+        attacking = actions[actions["x"] >= 70]
+        return {
+            "def_count": len(defensive), "mid_count": len(middle), "att_count": len(attacking),
+            "def_pct": len(defensive) / total * 100,
+            "mid_pct": len(middle) / total * 100,
+            "att_pct": len(attacking) / total * 100,
+        }
+
+    def draw_one_team(ax, team_name, opponent_name, team_color, side):
+        events = get_defensive_actions(team_name)
+        tackles, interceptions = events["tackles"], events["interceptions"]
+        recoveries, challenges, blocks = events["recoveries"], events["challenges"], events["blocks"]
+        high_recoveries = get_high_recoveries(team_name)
+
+        all_actions = pd.concat(
+            [tackles, interceptions, recoveries, challenges, blocks], ignore_index=True
+        ).dropna(subset=["x", "y"]).copy()
+
+        ppda_info = calculate_ppda(team_name, opponent_name)
+        ppda = ppda_info["ppda"]
+        ppda_text = "N/A" if pd.isna(ppda) else f"{ppda:.2f}"
+        thirds = calculate_thirds(all_actions)
+
+        pitch = Pitch(pitch_type="uefa", pitch_color=bg_color, line_color=line_color,
+                      linewidth=1.4, corner_arcs=True, pad_top=0, pad_bottom=0, pad_left=0, pad_right=0)
+        pitch.draw(ax=ax)
+
+        if side == "away":
+            ax.invert_xaxis()
+            ax.invert_yaxis()
+
+        for (x0, w, color) in [(0, 35, defensive_third_color), (35, 35, middle_third_color), (70, 35, attacking_third_color)]:
+            ax.add_patch(Rectangle((x0, 0), w, 68, facecolor=color, edgecolor="none",
+                                    alpha=third_alpha, zorder=0, clip_on=True))
+
+        ax.plot([35, 35], [0, 68], color="#999999", linestyle="--", linewidth=0.9, alpha=0.65, zorder=2)
+        ax.plot([70, 70], [0, 68], color="#999999", linestyle="--", linewidth=0.9, alpha=0.65, zorder=2)
+
+        ppda_zone = Rectangle((42, 0), 63, 68, facecolor=team_color, edgecolor="none",
+                              alpha=0.065, zorder=0.5, clip_on=True)
+        ax.add_patch(ppda_zone)
+        ax.plot([42, 42], [0, 68], color=team_color, linestyle="--", linewidth=1.7, alpha=0.75, zorder=3)
+        ax.text(46, 5, ar("منطقة حساب PPDA"), fontsize=9.5, fontweight="bold", color=team_color,
+                ha="center", va="center", zorder=20,
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1.2))
+
+        high_arc = Arc((105, 34), width=82.3, height=82.3, angle=0, theta1=90, theta2=270,
+                       color=team_color, linestyle="--", linewidth=1.4, alpha=0.35, zorder=3)
+        high_arc.set_clip_on(True)
+        high_arc.set_clip_path(ax.patch)
+        ax.add_patch(high_arc)
+
+        if len(all_actions) >= 3:
+            team_cmap = LinearSegmentedColormap.from_list(f"{team_name}_press", ["#ffffff", team_color], N=100)
+            try:
+                pitch.kdeplot(all_actions["x"], all_actions["y"], ax=ax, fill=True, levels=60,
+                              thresh=0.04, cmap=team_cmap, alpha=0.10, zorder=1)
+            except Exception:
+                pass
+
+        if not tackles.empty:
+            pitch.scatter(tackles["x"], tackles["y"], marker="X", s=55, color=team_color,
+                          edgecolors="black", linewidth=0.6, ax=ax, zorder=5)
+        if not interceptions.empty:
+            pitch.scatter(interceptions["x"], interceptions["y"], marker="D", s=55, color=team_color,
+                          edgecolors="black", linewidth=0.7, ax=ax, zorder=5)
+        if not recoveries.empty:
+            pitch.scatter(recoveries["x"], recoveries["y"], marker="o", s=45, facecolors="white",
+                          edgecolors=team_color, linewidth=1.3, ax=ax, zorder=5)
+        if not challenges.empty:
+            pitch.scatter(challenges["x"], challenges["y"], marker="+", s=65, color=team_color,
+                          linewidth=1.4, ax=ax, zorder=5)
+        if not blocks.empty:
+            pitch.scatter(blocks["x"], blocks["y"], marker="s", s=38, color="#555555",
+                          edgecolors="black", linewidth=0.5, ax=ax, zorder=5)
+        if not high_recoveries.empty:
+            pitch.scatter(high_recoveries["x"], high_recoveries["y"], marker="*", s=180,
+                          color=high_recovery_color, edgecolors="black", linewidth=1, ax=ax, zorder=10)
+
+        ax.set_title(f"{team_name}\n" + ar("مؤشر شدة الضغط") + f" PPDA: {ppda_text}",
+                    fontsize=15, fontweight="bold", color=team_color, pad=22)
+
+        if side == "home":
+            ax.text(0.02, 1.04, ar("اتجاه الهجوم") + "  →", transform=ax.transAxes, color=team_color,
+                    fontsize=11, fontweight="bold", ha="left", va="bottom", clip_on=False)
+        else:
+            ax.text(0.98, 1.04, "←  " + ar("اتجاه الهجوم"), transform=ax.transAxes, color=team_color,
+                    fontsize=11, fontweight="bold", ha="right", va="bottom", clip_on=False)
+
+        if side == "home":
+            third_values = [
+                (0.17, "الثلث الدفاعي", thirds["def_count"], thirds["def_pct"], defensive_third_color),
+                (0.50, "الثلث الأوسط", thirds["mid_count"], thirds["mid_pct"], middle_third_color),
+                (0.83, "الثلث الهجومي", thirds["att_count"], thirds["att_pct"], attacking_third_color),
+            ]
+        else:
+            third_values = [
+                (0.17, "الثلث الهجومي", thirds["att_count"], thirds["att_pct"], attacking_third_color),
+                (0.50, "الثلث الأوسط", thirds["mid_count"], thirds["mid_pct"], middle_third_color),
+                (0.83, "الثلث الدفاعي", thirds["def_count"], thirds["def_pct"], defensive_third_color),
+            ]
+
+        for xpos, label, count, pct, txt_color in third_values:
+            ax.text(xpos, -0.075, ar(f"{label}\n{count} إجراء | {pct:.1f}%"),
+                    transform=ax.transAxes, fontsize=10, fontweight="bold", color=txt_color,
+                    ha="center", va="top", clip_on=False, linespacing=1.3)
+
+        stats_text = (
+            f"PPDA: {ppda_text}"
+            + "  |  " + ar("التدخلات") + f": {len(tackles)}"
+            + "  |  " + ar("الاعتراضات") + f": {len(interceptions)}"
+            + "  |  " + ar("الاسترجاعات") + f": {len(recoveries)}"
+            + "  |  " + ar("الاسترجاعات العالية") + f": {len(high_recoveries)}"
+        )
+        ax.text(0.50, -0.145, stats_text, transform=ax.transAxes, fontsize=8.8, fontweight="bold",
+                color="#444444", ha="center", va="top", clip_on=False)
+
+        return {
+            "ppda": ppda,
+            "passes_allowed": ppda_info["passes_allowed"],
+            "ppda_actions": ppda_info["defensive_actions"],
+            "tackles": len(tackles),
+            "interceptions": len(interceptions),
+            "recoveries": len(recoveries),
+            "high_recoveries": len(high_recoveries),
+            "thirds": thirds,
+        }
+
+    fig, axs = plt.subplots(1, 2, figsize=(20, 11), facecolor=bg_color)
+    home_results = draw_one_team(axs[0], hteamName, ateamName, hcol, side="home")
+    away_results = draw_one_team(axs[1], ateamName, hteamName, acol, side="away")
+
+    fig.suptitle(
+        f"{hteamName}  " + ar("ضد") + f"  {ateamName}\n" + ar("تحليل الضغط والاسترجاع العالي"),
+        fontsize=22, fontweight="bold", y=0.985
+    )
+
+    legend_elements = [
+        Line2D([0], [0], marker="X", color="none", markerfacecolor="#555555", markeredgecolor="black", markersize=8, label=ar("تدخل")),
+        Line2D([0], [0], marker="D", color="none", markerfacecolor="#555555", markeredgecolor="black", markersize=7, label=ar("اعتراض")),
+        Line2D([0], [0], marker="+", color="#555555", linestyle="None", markersize=9, label=ar("مواجهة")),
+        Line2D([0], [0], marker="o", color="none", markerfacecolor="white", markeredgecolor="#555555", markersize=7, label=ar("استرجاع الكرة")),
+        Line2D([0], [0], marker="s", color="none", markerfacecolor="#555555", markeredgecolor="black", markersize=7, label=ar("حجب تمريرة")),
+        Line2D([0], [0], marker="*", color="none", markerfacecolor=high_recovery_color, markeredgecolor="black", markersize=11, label=ar("استرجاع عال")),
+    ]
+    fig.legend(handles=legend_elements, loc="lower center", ncol=6, frameon=False,
+              fontsize=10, bbox_to_anchor=(0.5, 0.045))
+
+    plt.subplots_adjust(top=0.86, bottom=0.20, left=0.03, right=0.97, wspace=0.10)
+
+    stats = {"home": home_results, "away": away_results}
+    return fig, stats
+
+
 # -*- coding: utf-8 -*-
 # -*- coding: utf-8 -*-
 def plotting_match_stats(
@@ -1081,18 +1337,18 @@ def plotting_match_stats(
     hclr, aclr = cnt(hdf, "Clearance"), cnt(adf, "Clearance")
     harl, aarl = cnt(hdf, "Aerial"), cnt(adf, "Aerial")
 
-    # ====== PPDA ======
+    # ====== PPDA (نسبة 40% / 60% من طول الملعب - x=42 / x=63 على مقياس 105م) ======
     def_actions_pattern = re.compile(r"Interception|Foul|Challenge|BlockedPass|Tackle", flags=re.I)
     home_def_acts = hdf[
         _col(hdf.astype({"type": str}), "type").str.contains(def_actions_pattern, na=False)
-        & (_col(hdf, "x", pd.Series([0] * len(hdf))) > 35)
+        & (_col(hdf, "x", pd.Series([0] * len(hdf))) > 42)
     ]
     away_def_acts = adf[
         _col(adf.astype({"type": str}), "type").str.contains(def_actions_pattern, na=False)
-        & (_col(adf, "x", pd.Series([0] * len(adf))) > 35)
+        & (_col(adf, "x", pd.Series([0] * len(adf))) > 42)
     ]
-    home_pass = hdf[(hdf["type"] == "Pass") & (_col(hdf, "x", pd.Series([0] * len(hdf))) < 70)]
-    away_pass = adf[(adf["type"] == "Pass") & (_col(adf, "x", pd.Series([0] * len(adf))) < 70)]
+    home_pass = hdf[(hdf["type"] == "Pass") & (_col(hdf, "x", pd.Series([0] * len(hdf))) < 63)]
+    away_pass = adf[(adf["type"] == "Pass") & (_col(adf, "x", pd.Series([0] * len(adf))) < 63)]
     home_def_n = safe_len(home_def_acts)
     away_def_n = safe_len(away_def_acts)
     home_ppda = round(safe_len(away_pass) / home_def_n, 2) if home_def_n > 0 else np.nan
@@ -6384,7 +6640,8 @@ if analysis_type == "تحليل الفريق":
         "xT لأفضل اللاعبين",
         "Pass Sonar",
         "Field Tilt",
-        "توزيع اللعب عبر أثلاث الملعب"
+        "توزيع اللعب عبر أثلاث الملعب",
+        "الضغط + PPDA"
     ],
     key="team_analysis_type"
 )
@@ -6580,6 +6837,44 @@ if analysis_type == "تحليل الفريق":
             with st.expander("Debug"):
                 st.write("columns:", sorted(df_match.columns.tolist()))
                 st.write(df_match.head())
+
+    # =========================
+    # الضغط + PPDA
+    # =========================
+    elif team_analysis_type == "الضغط + PPDA":
+        try:
+            fig_press, press_stats = draw_pressing_map_both_teams(
+                df_match,
+                hteam,
+                ateam,
+                hcol=home_color,
+                acol=away_color,
+                bg_color="#ffffff",
+                line_color=line_color,
+            )
+            st.pyplot(fig_press, use_container_width=True)
+            st.caption(
+                f"PPDA — {hteam}: {press_stats['home']['ppda']:.2f} | "
+                f"{ateam}: {press_stats['away']['ppda']:.2f}"
+                if not pd.isna(press_stats['home']['ppda']) and not pd.isna(press_stats['away']['ppda'])
+                else "PPDA: بيانات غير كافية لحساب المؤشر"
+            )
+            st.markdown(
+                """
+<div dir="rtl" style="text-align: right;">
+<p><b>PPDA = تمريرات الخصم المسموح بها ÷ عدد الإجراءات الدفاعية المؤهلة</b></p>
+<p>مؤشر يقيس كثافة الضغط الدفاعي: كم تمريرة يستطيع الخصم تنفيذها قبل أن يقوم الفريق بإجراء دفاعي مؤهل لـ PPDA.</p>
+<p>كلما انخفضت قيمة PPDA، تدخل الفريق بعد عدد أقل من تمريرات الخصم، وهذا يشير عادةً إلى ضغط أكثر كثافة.</p>
+<p><b>ألوان الملعب:</b> الأحمر = الثلث الدفاعي | الأصفر = الثلث الأوسط | الأخضر = الثلث الهجومي.</p>
+<p>الاسترجاع العالي هو استعادة الكرة في منطقة متقدمة وقريبة من مرمى الخصم، ويساعدنا على قياس مردود الضغط العالي.</p>
+<p><b>مهم:</b> PPDA لا يقيس جودة الدفاع كاملة؛ يجب قراءته مع موقع الضغط، الاسترجاعات العالية، ونوعية الإجراءات الدفاعية.</p>
+<p><b>طريقة القراءة: PPDA = كثافة الضغط | الأثلاث = مكان الضغط | الاسترجاع العالي = مردود الضغط</b></p>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+        except Exception as e:
+            st.error(f"خطأ في تحليل الضغط + PPDA: {e}")
 
     # =========================
     # توزيع اللعب عبر أثلاث الملعب
