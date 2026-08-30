@@ -584,7 +584,7 @@ path_eff = [path_effects.Stroke(linewidth=3, foreground=bg_color), path_effects.
 #pearl_earring_cmapa = LinearSegmentedColormap.from_list("Pearl Earring A", [bg_color, color_team2], N=20)
 
 # رابط الصورة من GitHub (نسخة RAW)
-image_url = "https://github.com/salharbifootball/SAFootball/blob/main/images/seven.jpeg?raw=true"
+image_url = "https://github.com/salharbifootball/SAFootball/blob/main/images/ChatGPT%20Image%2026%20%D8%A3%D8%BA%D8%B3%D8%B7%D8%B3%202026%D8%8C%2005_26_22%20%D9%85.png"
 
 # عرض الصورة في الوسط
 st.markdown(
