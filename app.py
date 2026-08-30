@@ -59,7 +59,7 @@ st.markdown(
 # -------------------------
 # Logo (display if available) - safe, non-fatal
 # -------------------------
-LOGO_FILENAME = "https://github.com/salharbifootball/SAFootball/blob/main/images/ChatGPT%20Image%2026%20%D8%A3%D8%BA%D8%B3%D8%B7%D8%B3%202026%D8%8C%2005_26_22%20%D9%85.png"
+LOGO_FILENAME = "WhatsApp Image 2026-06-30 at 1.01.16 AM.jpeg"
 try:
     LOGO_PATH = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
 except Exception:
